@@ -28,6 +28,8 @@ import io.questdb.cairo.*;
 import io.questdb.std.ObjHashSet;
 import io.questdb.std.ObjList;
 
+import static io.questdb.cutlass.line.tcp.DefaultColumnTypes.DEFAULT_COLUMN_TYPES;
+
 class TableStructureAdapter implements TableStructure {
     private static final String TIMESTAMP_FIELD = "timestamp";
 
@@ -69,7 +71,7 @@ class TableStructureAdapter implements TableStructure {
         if (columnIndex == getTimestampIndex()) {
             return ColumnType.TIMESTAMP;
         }
-        return LineTcpMeasurementScheduler.DEFAULT_COLUMN_TYPES[entities.get(columnIndex).getType()];
+        return DEFAULT_COLUMN_TYPES[entities.get(columnIndex).getType()];
     }
 
     @Override

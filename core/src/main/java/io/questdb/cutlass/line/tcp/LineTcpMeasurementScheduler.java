@@ -50,6 +50,7 @@ import java.util.Arrays;
 import java.util.BitSet;
 import java.util.concurrent.locks.ReadWriteLock;
 
+import static io.questdb.cutlass.line.tcp.DefaultColumnTypes.DEFAULT_COLUMN_TYPES;
 import static io.questdb.network.IODispatcher.DISCONNECT_REASON_UNKNOWN_OPERATION;
 
 class LineTcpMeasurementScheduler implements Closeable {
@@ -58,12 +59,11 @@ class LineTcpMeasurementScheduler implements Closeable {
     // A reshuffle event is used to redistribute load across threads
     private static final int RESHUFFLE_EVENT_ID = -1;
 
-    // An incomplete event is used when the queue producer has grabbed an event but is
-    // not able to populate it for some reason, the event needs to be committed to the
-    // queue incomplete
+    // An incomplete event is used when the queue producer has grabbed an event but is not able
+    // to populate it for some reason, the event needs to be committed to the queue incomplete
     private static final int INCOMPLETE_EVENT_ID = -2;
     private static final int RELEASE_WRITER_EVENT_ID = -3;
-    static final int[] DEFAULT_COLUMN_TYPES = new int[LineTcpParser.N_ENTITY_TYPES];
+
     private final CairoEngine engine;
     private final CairoSecurityContext securityContext;
     private final CairoConfiguration cairoConfiguration;
@@ -1604,21 +1604,5 @@ class LineTcpMeasurementScheduler implements Closeable {
                     .$(", nNetworkIoWorkers=").$(tableUpdateDetails.networkIOOwnerCount)
                     .I$();
         }
-    }
-
-    static {
-        // if not set it defaults to ColumnType.UNDEFINED
-        DEFAULT_COLUMN_TYPES[LineTcpParser.ENTITY_TYPE_TAG] = ColumnType.SYMBOL;
-        DEFAULT_COLUMN_TYPES[LineTcpParser.ENTITY_TYPE_FLOAT] = ColumnType.DOUBLE;
-        DEFAULT_COLUMN_TYPES[LineTcpParser.ENTITY_TYPE_INTEGER] = ColumnType.LONG;
-        DEFAULT_COLUMN_TYPES[LineTcpParser.ENTITY_TYPE_STRING] = ColumnType.STRING;
-        DEFAULT_COLUMN_TYPES[LineTcpParser.ENTITY_TYPE_SYMBOL] = ColumnType.SYMBOL;
-        DEFAULT_COLUMN_TYPES[LineTcpParser.ENTITY_TYPE_BOOLEAN] = ColumnType.BOOLEAN;
-        DEFAULT_COLUMN_TYPES[LineTcpParser.ENTITY_TYPE_LONG256] = ColumnType.LONG256;
-        DEFAULT_COLUMN_TYPES[LineTcpParser.ENTITY_TYPE_GEOBYTE] = ColumnType.getGeoHashTypeWithBits(8);
-        DEFAULT_COLUMN_TYPES[LineTcpParser.ENTITY_TYPE_GEOSHORT] = ColumnType.getGeoHashTypeWithBits(16);
-        DEFAULT_COLUMN_TYPES[LineTcpParser.ENTITY_TYPE_GEOINT] = ColumnType.getGeoHashTypeWithBits(32);
-        DEFAULT_COLUMN_TYPES[LineTcpParser.ENTITY_TYPE_GEOLONG] = ColumnType.getGeoHashTypeWithBits(60);
-        DEFAULT_COLUMN_TYPES[LineTcpParser.ENTITY_TYPE_TIMESTAMP] = ColumnType.TIMESTAMP;
     }
 }
