@@ -310,7 +310,7 @@ class LineTcpMeasurementEvent implements Closeable {
         this.commitOnWriterClose = commitOnWriterClose;
     }
 
-    void processMeasurementEvent(LineTcpMeasurementScheduler.WriterJob job) {
+    void processMeasurementEvent(WriterJob job) {
         final DirectCharSink charSink = job.getCharSink();
         final FloatingDirectCharSink floatingCharSink = job.getFloatingCharSink();
 

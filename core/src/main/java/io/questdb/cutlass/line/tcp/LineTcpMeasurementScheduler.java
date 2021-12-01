@@ -47,7 +47,6 @@ import java.util.Arrays;
 import java.util.BitSet;
 import java.util.concurrent.locks.ReadWriteLock;
 
-import static io.questdb.cutlass.line.tcp.LineTcpMeasurementEvent.*;
 import static io.questdb.network.IODispatcher.DISCONNECT_REASON_UNKNOWN_OPERATION;
 
 class LineTcpMeasurementScheduler implements Closeable {
@@ -56,15 +55,15 @@ class LineTcpMeasurementScheduler implements Closeable {
     private final CairoEngine engine;
     private final CairoSecurityContext securityContext;
     private final CairoConfiguration cairoConfiguration;
-    private final MillisecondClock milliClock;
-    private final RingQueue<LineTcpMeasurementEvent> queue;
-    private final ReadWriteLock tableUpdateDetailsLock = new SimpleReadWriteLock();
-    private final CharSequenceObjHashMap<TableUpdateDetails> tableUpdateDetailsByTableName;
-    private final CharSequenceObjHashMap<TableUpdateDetails> idleTableUpdateDetailsByTableName;
+    final MillisecondClock milliClock;
+    final RingQueue<LineTcpMeasurementEvent> queue;
+    final ReadWriteLock tableUpdateDetailsLock = new SimpleReadWriteLock();
+    final CharSequenceObjHashMap<TableUpdateDetails> tableUpdateDetailsByTableName;
+    final CharSequenceObjHashMap<TableUpdateDetails> idleTableUpdateDetailsByTableName;
     private final int[] loadByWriterThread;
     private final int processedEventCountBeforeReshuffle;
     private final double maxLoadRatio;
-    private final long maintenanceInterval;
+    final long maintenanceInterval;
     private final long writerIdleTimeout;
     private final int commitMode;
     private final NetworkIOJob[] netIoJobs;
@@ -125,7 +124,7 @@ class LineTcpMeasurementScheduler implements Closeable {
             for (int n = 0; n < nWriterThreads; n++) {
                 SCSequence subSeq = new SCSequence();
                 fanOut.and(subSeq);
-                WriterJob writerJob = new WriterJob(n, subSeq);
+                WriterJob writerJob = new WriterJob(this, n, subSeq);
                 writerWorkerPool.assign(n, writerJob);
                 writerWorkerPool.assign(n, writerJob::close);
             }
@@ -133,7 +132,7 @@ class LineTcpMeasurementScheduler implements Closeable {
         } else {
             SCSequence subSeq = new SCSequence();
             pubSeq.then(subSeq).then(pubSeq);
-            WriterJob writerJob = new WriterJob(0, subSeq);
+            WriterJob writerJob = new WriterJob(this, 0, subSeq);
             writerWorkerPool.assign(0, writerJob);
             writerWorkerPool.assign(0, writerJob::close);
         }
@@ -472,6 +471,10 @@ class LineTcpMeasurementScheduler implements Closeable {
             return writerThreadId;
         }
 
+        long getLastMeasurementMillis() {
+            return lastMeasurementMillis;
+        }
+
         @Override
         public void close() {
             tableUpdateDetailsLock.writeLock().lock();
@@ -575,8 +578,12 @@ class LineTcpMeasurementScheduler implements Closeable {
             return localDetails;
         }
 
-        void switchThreads() {
-            assignedToJob = false;
+        void setAssignedToJob(boolean assignedToJob) {
+            this.assignedToJob = assignedToJob;
+        }
+
+        boolean isAssignedToJob() {
+            return assignedToJob;
         }
 
         class ThreadLocalDetails implements Closeable {
@@ -707,180 +714,6 @@ class LineTcpMeasurementScheduler implements Closeable {
                 return symIndex;
             }
 
-        }
-    }
-
-    class WriterJob implements Job {
-        private final int workerId;
-        private final Sequence sequence;
-        private final Path path = new Path();
-        private final DirectCharSink charSink = new DirectCharSink(64);
-        private final FloatingDirectCharSink floatingCharSink = new FloatingDirectCharSink();
-        private final ObjList<TableUpdateDetails> assignedTables = new ObjList<>();
-        private long lastMaintenanceMillis = 0;
-
-        private WriterJob(int id, Sequence sequence) {
-            super();
-            this.workerId = id;
-            this.sequence = sequence;
-        }
-
-        DirectCharSink getCharSink() {
-            return charSink;
-        }
-
-        FloatingDirectCharSink getFloatingCharSink() {
-            return floatingCharSink;
-        }
-
-        @Override
-        public boolean run(int workerId) {
-            assert this.workerId == workerId;
-            boolean busy = drainQueue();
-            doMaintenance();
-            return busy;
-        }
-
-        private void close() {
-            LOG.info().$("line protocol writer closing [threadId=").$(workerId).$(']').$();
-            // Finish all jobs in the queue before stopping
-            for (int n = 0; n < queue.getCycle(); n++) {
-                if (!run(workerId)) {
-                    break;
-                }
-            }
-
-            Misc.free(path);
-            Misc.free(charSink);
-            Misc.free(floatingCharSink);
-            Misc.freeObjList(assignedTables);
-            assignedTables.clear();
-        }
-
-        private void doMaintenance() {
-            final long millis = milliClock.getTicks();
-            if (millis - lastMaintenanceMillis < maintenanceInterval) {
-                return;
-            }
-
-            lastMaintenanceMillis = millis;
-            for (int n = 0, sz = assignedTables.size(); n < sz; n++) {
-                assignedTables.getQuick(n).handleWriterThreadMaintenance(millis);
-            }
-        }
-
-        private boolean drainQueue() {
-            boolean busy = false;
-            while (true) {
-                long cursor;
-                while ((cursor = sequence.next()) < 0) {
-                    if (cursor == -1) {
-                        return busy;
-                    }
-                }
-                busy = true;
-                final LineTcpMeasurementEvent event = queue.get(cursor);
-                boolean eventProcessed;
-
-                try {
-                    if (event.getThreadId() == workerId) {
-                        try {
-                            if (!event.tableUpdateDetails.assignedToJob) {
-                                assignedTables.add(event.tableUpdateDetails);
-                                event.tableUpdateDetails.assignedToJob = true;
-                                LOG.info().$("assigned table to writer thread [tableName=").$(event.tableUpdateDetails.tableName).$(", threadId=").$(workerId).I$();
-                            }
-                            event.processMeasurementEvent(this);
-                            eventProcessed = true;
-                        } catch (Throwable ex) {
-                            LOG.error().$("closing writer for because of error [table=").$(event.tableUpdateDetails.tableName).$(",ex=").$(ex).I$();
-                            event.createWriterReleaseEvent(event.tableUpdateDetails, false);
-                            eventProcessed = false;
-                        }
-                    } else {
-                        switch (event.getThreadId()) {
-                            case RESHUFFLE_EVENT_ID:
-                                eventProcessed = processReshuffleEvent(event);
-                                break;
-
-                            case RELEASE_WRITER_EVENT_ID:
-                                eventProcessed = processWriterReleaseEvent(event);
-                                break;
-
-                            default:
-                                eventProcessed = true;
-                                break;
-                        }
-                    }
-                } catch (Throwable ex) {
-                    eventProcessed = true;
-                    LOG.error().$("failed to process ILP event because of exception [ex=").$(ex).I$();
-                }
-
-                // by not releasing cursor we force the sequence to return us the same value over and over
-                // until cursor value is released
-                if (eventProcessed) {
-                    sequence.done(cursor);
-                } else {
-                    return false;
-                }
-            }
-        }
-
-        private boolean processReshuffleEvent(LineTcpMeasurementEvent event) {
-            if (event.rebalanceToThreadId == workerId) {
-                // This thread is now a declared owner of the table, but it can only become actual
-                // owner when "old" owner is fully done. This is a volatile variable on the event, used by both threads
-                // to handover the table. The starting point is "false" and the "old" owner thread will eventually set this
-                // to "true". In the mean time current thread will not be processing the queue until the handover is
-                // complete
-                if (event.rebalanceReleasedByFromThread) {
-                    LOG.info().$("rebalance cycle, new thread ready [threadId=").$(workerId).$(", table=").$(event.tableUpdateDetails.tableName).$(']').$();
-                    return true;
-                }
-
-                return false;
-            }
-
-            if (event.rebalanceFromThreadId == workerId) {
-                for (int n = 0, sz = assignedTables.size(); n < sz; n++) {
-                    if (assignedTables.get(n) == event.tableUpdateDetails) {
-                        assignedTables.remove(n);
-                        break;
-                    }
-                }
-                LOG.info()
-                        .$("rebalance cycle, old thread finished [threadId=").$(workerId)
-                        .$(", table=").$(event.tableUpdateDetails.tableName)
-                        .I$();
-                event.tableUpdateDetails.switchThreads();
-                event.rebalanceReleasedByFromThread = true;
-            }
-
-            return true;
-        }
-
-        private boolean processWriterReleaseEvent(LineTcpMeasurementEvent event) {
-            tableUpdateDetailsLock.readLock().lock();
-            try {
-                if (event.tableUpdateDetails.writerThreadId != workerId) {
-                    return true;
-                }
-                final TableUpdateDetails tableUpdateDetails = event.tableUpdateDetails;
-                if (tableUpdateDetailsByTableName.keyIndex(tableUpdateDetails.tableName) < 0) {
-                    // Table must have been re-assigned to an IO thread
-                    return true;
-                }
-                LOG.info()
-                        .$("releasing writer, its been idle since ").$ts(tableUpdateDetails.lastMeasurementMillis * 1_000)
-                        .$("[tableName=").$(tableUpdateDetails.tableName)
-                        .I$();
-
-                tableUpdateDetails.handleWriterRelease(event.isCommitOnWriterClose());
-            } finally {
-                tableUpdateDetailsLock.readLock().unlock();
-            }
-            return true;
         }
     }
 
