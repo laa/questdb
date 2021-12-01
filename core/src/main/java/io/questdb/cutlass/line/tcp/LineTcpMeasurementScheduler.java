@@ -54,7 +54,6 @@ import static io.questdb.network.IODispatcher.DISCONNECT_REASON_UNKNOWN_OPERATIO
 
 class LineTcpMeasurementScheduler implements Closeable {
     private static final Log LOG = LogFactory.getLog(LineTcpMeasurementScheduler.class);
-    private static final String TIMESTAMP_FIELD = "timestamp";
 
     // A reshuffle event is used to redistribute load across threads
     private static final int RESHUFFLE_EVENT_ID = -1;
@@ -64,7 +63,7 @@ class LineTcpMeasurementScheduler implements Closeable {
     // queue incomplete
     private static final int INCOMPLETE_EVENT_ID = -2;
     private static final int RELEASE_WRITER_EVENT_ID = -3;
-    private static final int[] DEFAULT_COLUMN_TYPES = new int[LineTcpParser.N_ENTITY_TYPES];
+    static final int[] DEFAULT_COLUMN_TYPES = new int[LineTcpParser.N_ENTITY_TYPES];
     private final CairoEngine engine;
     private final CairoSecurityContext securityContext;
     private final CairoConfiguration cairoConfiguration;
@@ -78,10 +77,9 @@ class LineTcpMeasurementScheduler implements Closeable {
     private final double maxLoadRatio;
     private final long maintenanceInterval;
     private final long writerIdleTimeout;
-    private final int defaultPartitionBy;
     private final int commitMode;
     private final NetworkIOJob[] netIoJobs;
-    private final TableStructureAdapter tableStructureAdapter = new TableStructureAdapter();
+    private final TableStructureAdapter tableStructureAdapter;
     private final Path path = new Path();
     private final MemoryMARW ddlMem = Vm.getMARWInstance();
     private final LineTcpReceiverConfiguration configuration;
@@ -112,8 +110,7 @@ class LineTcpMeasurementScheduler implements Closeable {
             ioWorkerPool.assign(i, netIoJob::close);
         }
 
-        // Worker count is set to 1 because we do not use this execution context
-        // in worker threads.
+        // Worker count is set to 1 because we do not use this execution context in worker threads.
         tableUpdateDetailsByTableName = new CharSequenceObjHashMap<>();
         idleTableUpdateDetailsByTableName = new CharSequenceObjHashMap<>();
         loadByWriterThread = new int[writerWorkerPool.getWorkerCount()];
@@ -155,8 +152,9 @@ class LineTcpMeasurementScheduler implements Closeable {
         processedEventCountBeforeReshuffle = lineConfiguration.getNUpdatesPerLoadRebalance();
         maxLoadRatio = lineConfiguration.getMaxLoadRatio();
         maintenanceInterval = lineConfiguration.getMaintenanceInterval();
-        defaultPartitionBy = lineConfiguration.getDefaultPartitionBy();
         writerIdleTimeout = lineConfiguration.getWriterIdleTimeout();
+
+        tableStructureAdapter = new TableStructureAdapter(configuration, cairoConfiguration);
     }
 
     @Override
@@ -1605,113 +1603,6 @@ class LineTcpMeasurementScheduler implements Closeable {
                     .$(", tableName=").$(tableUpdateDetails.tableName)
                     .$(", nNetworkIoWorkers=").$(tableUpdateDetails.networkIOOwnerCount)
                     .I$();
-        }
-    }
-
-    private class TableStructureAdapter implements TableStructure {
-        private CharSequence tableName;
-        private int timestampIndex = -1;
-        private final ObjHashSet<CharSequence> entityNames = new ObjHashSet<>();
-        private final ObjList<ProtoEntity> entities = new ObjList<>();
-
-        @Override
-        public int getColumnCount() {
-            final int size = entities.size();
-            return timestampIndex == -1 ? size + 1 : size;
-        }
-
-        @Override
-        public CharSequence getColumnName(int columnIndex) {
-            assert columnIndex < getColumnCount();
-            if (columnIndex == getTimestampIndex()) {
-                return TIMESTAMP_FIELD;
-            }
-            CharSequence colName = entities.get(columnIndex).getName().toString();
-            if (TableUtils.isValidColumnName(colName)) {
-                return colName;
-            }
-            throw CairoException.instance(0).put("column name contains invalid characters [colName=").put(colName).put(']');
-        }
-
-        @Override
-        public int getColumnType(int columnIndex) {
-            if (columnIndex == getTimestampIndex()) {
-                return ColumnType.TIMESTAMP;
-            }
-            return DEFAULT_COLUMN_TYPES[entities.get(columnIndex).getType()];
-        }
-
-        @Override
-        public long getColumnHash(int columnIndex) {
-            return cairoConfiguration.getRandom().nextLong();
-        }
-
-        @Override
-        public int getIndexBlockCapacity(int columnIndex) {
-            return 0;
-        }
-
-        @Override
-        public boolean isIndexed(int columnIndex) {
-            return false;
-        }
-
-        @Override
-        public boolean isSequential(int columnIndex) {
-            return false;
-        }
-
-        @Override
-        public int getPartitionBy() {
-            return defaultPartitionBy;
-        }
-
-        @Override
-        public boolean getSymbolCacheFlag(int columnIndex) {
-            return cairoConfiguration.getDefaultSymbolCacheFlag();
-        }
-
-        @Override
-        public int getSymbolCapacity(int columnIndex) {
-            return cairoConfiguration.getDefaultSymbolCapacity();
-        }
-
-        @Override
-        public CharSequence getTableName() {
-            return tableName;
-        }
-
-        @Override
-        public int getTimestampIndex() {
-            return timestampIndex == -1 ? entities.size() : timestampIndex;
-        }
-
-        @Override
-        public int getMaxUncommittedRows() {
-            return cairoConfiguration.getMaxUncommittedRows();
-        }
-
-        @Override
-        public long getCommitLag() {
-            return cairoConfiguration.getCommitLag();
-        }
-
-        TableStructureAdapter of(CharSequence tableName, LineTcpParser protoParser) {
-            this.tableName = tableName;
-
-            entityNames.clear();
-            entities.clear();
-            for (int i = 0; i < protoParser.getnEntities(); i++) {
-                final ProtoEntity entity = protoParser.getEntity(i);
-                final CharSequence name = entity.getName();
-                if (entityNames.add(name)) {
-                    if (name.equals(TIMESTAMP_FIELD)) {
-                        timestampIndex = entities.size();
-                    }
-                    entities.add(entity);
-                }
-            }
-            return this;
         }
     }
 
